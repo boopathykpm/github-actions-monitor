@@ -8,7 +8,7 @@ A real-time dashboard to monitor GitHub Actions workflow runs across multiple re
 - **Organization selector** — switch between your GitHub orgs; selection is persisted across sessions.
 - **Repository management** — search, select, and manage which repos to monitor from the selected org (supports Select All / Clear All).
 - **Live dashboard** — shows the latest run per workflow, grouped by status: Running, Waiting, Success, Failure.
-- **Auto-refresh** — configurable interval (15s / 30s / 60s / 120s) with countdown timer and manual refresh.
+- **Adaptive auto-refresh** — automatically polls every 5 seconds when active runs are detected (in-progress, queued, waiting); falls back to user-selected idle interval (15s / 30s / 60s / 120s) when all runs are complete. Includes countdown timer and manual refresh.
 - **New run detection** — highlights newly appeared runs between refreshes with a pulsing "new" badge.
 - **Expandable job/step details** — drill into jobs and individual steps for any workflow run, with duration and status indicators.
 - **Persistent settings** — selected org, monitored repos, and refresh interval are saved to localStorage.

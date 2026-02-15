@@ -8,7 +8,8 @@ interface DashboardProps {
   onOpenRepoManager: () => void;
 }
 
-const REFRESH_OPTIONS = [15, 30, 60, 120] as const; // seconds
+const REFRESH_OPTIONS = [15, 30, 60, 120] as const; // seconds (idle interval)
+const ACTIVE_POLL_INTERVAL = 5; // seconds — fast poll when runs are in progress
 const REFRESH_KEY = 'gha_monitor_refresh';
 
 function getSavedInterval(): number {
@@ -16,6 +17,8 @@ function getSavedInterval(): number {
   const parsed = saved ? Number(saved) : 60;
   return REFRESH_OPTIONS.includes(parsed as typeof REFRESH_OPTIONS[number]) ? parsed : 60;
 }
+
+const ACTIVE_STATUSES = new Set(['in_progress', 'queued', 'waiting', 'pending', 'requested']);
 
 type StatusCategory = 'running' | 'waiting' | 'success' | 'failure';
 
@@ -47,6 +50,19 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
   const [countdown, setCountdown] = useState(intervalSec);
   const knownRunIdsRef = useRef<Set<number>>(new Set());
   const isFirstFetchRef = useRef(true);
+
+  // Detect whether any fetched runs are still active
+  const hasActiveRuns = useMemo(() => {
+    for (const repoRuns of runs.values()) {
+      for (const run of repoRuns) {
+        if (ACTIVE_STATUSES.has(run.status)) return true;
+      }
+    }
+    return false;
+  }, [runs]);
+
+  // When runs are active, override to fast polling; otherwise use user's chosen interval
+  const effectiveInterval = hasActiveRuns ? ACTIVE_POLL_INTERVAL : intervalSec;
 
   const fetchAll = useCallback(async () => {
     if (!token || monitoredRepos.length === 0) {
@@ -100,17 +116,20 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
     setLastRefresh(new Date());
     setRefreshCycle((c) => c + 1);
     setLoading(false);
-    setCountdown(intervalSec);
-  }, [token, monitoredRepos, intervalSec]);
+  }, [token, monitoredRepos]);
 
-  // Initial fetch and auto-refresh
+  // Initial fetch and adaptive auto-refresh
   useEffect(() => {
     fetchAll();
-    const interval = setInterval(fetchAll, intervalSec * 1000);
+    const interval = setInterval(fetchAll, effectiveInterval * 1000);
     return () => clearInterval(interval);
-  }, [fetchAll, intervalSec]);
+  }, [fetchAll, effectiveInterval]);
 
-  // Countdown timer
+  // Countdown timer — resets whenever effectiveInterval changes
+  useEffect(() => {
+    setCountdown(effectiveInterval);
+  }, [effectiveInterval]);
+
   useEffect(() => {
     const tick = setInterval(() => {
       setCountdown((c) => (c > 0 ? c - 1 : 0));
@@ -123,6 +142,16 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
     setIntervalSec(sec);
     setCountdown(sec);
   }
+
+  const activeRunCount = useMemo(() => {
+    let count = 0;
+    for (const repoRuns of runs.values()) {
+      for (const run of repoRuns) {
+        if (ACTIVE_STATUSES.has(run.status)) count++;
+      }
+    }
+    return count;
+  }, [runs]);
 
   // Derive: latest run per (repo, workflow_name), grouped by repo, split by status
   const sections = useMemo(() => {
@@ -205,7 +234,19 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
           )}
         </div>
         <div className="flex items-center gap-3">
-          {/* Refresh interval selector */}
+          {/* Fast-refresh indicator */}
+          {hasActiveRuns && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+              <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+              <span className="text-xs font-medium text-yellow-400">
+                Live {ACTIVE_POLL_INTERVAL}s
+              </span>
+              <span className="text-[10px] text-yellow-500/70">
+                ({activeRunCount} active)
+              </span>
+            </div>
+          )}
+          {/* Idle refresh interval selector */}
           <div className="flex items-center bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
             {REFRESH_OPTIONS.map((sec) => (
               <button
