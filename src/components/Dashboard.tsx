@@ -9,7 +9,7 @@ interface DashboardProps {
 }
 
 const REFRESH_OPTIONS = [15, 30, 60, 120] as const; // seconds (idle interval)
-const ACTIVE_POLL_INTERVAL = 5; // seconds — fast poll when runs are in progress
+const ACTIVE_POLL_INTERVAL = 10; // seconds — fast poll when runs are in progress
 const REFRESH_KEY = 'gha_monitor_refresh';
 
 function getSavedInterval(): number {
@@ -186,10 +186,12 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
       repoMap.get(repoName)!.push(run);
     }
 
-    // 3. Sort workflows within each repo by name
+    // 3. Sort workflows within each repo by most recent first
     for (const repoMap of categorized.values()) {
       for (const [repo, wfRuns] of repoMap) {
-        repoMap.set(repo, wfRuns.sort((a, b) => a.name.localeCompare(b.name)));
+        repoMap.set(repo, wfRuns.sort((a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+        ));
       }
     }
 
@@ -316,7 +318,11 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
             {/* Repo groups within this status */}
             <div className="space-y-6">
               {Array.from(repoMap.entries())
-                .sort(([a], [b]) => a.localeCompare(b))
+                .sort(([, aRuns], [, bRuns]) => {
+                  const aLatest = Math.max(...aRuns.map((r) => new Date(r.updated_at).getTime()));
+                  const bLatest = Math.max(...bRuns.map((r) => new Date(r.updated_at).getTime()));
+                  return bLatest - aLatest;
+                })
                 .map(([repoFullName, repoRuns]) => (
                   <div key={repoFullName}>
                     {/* Repo header */}
