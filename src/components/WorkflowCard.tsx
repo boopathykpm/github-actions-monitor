@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import type { WorkflowRun } from '../lib/github';
+import { useState, useEffect, useMemo } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { getRunJobs, type WorkflowRun, type WorkflowJob } from '../lib/github';
 import StepsList from './StepsList';
 
 interface WorkflowCardProps {
@@ -60,12 +61,55 @@ function timeAgo(dateStr: string): string {
   return `${days}d ago`;
 }
 
+function getEnvironment(inputs: Record<string, string> | null | undefined): string | null {
+  if (!inputs) return null;
+  for (const [key, value] of Object.entries(inputs)) {
+    if (key.toLowerCase() === 'environment' && value) return value;
+  }
+  return null;
+}
+
 export default function WorkflowCard({ run, isNew, refreshCycle = 0 }: WorkflowCardProps) {
+  const { token } = useAuth();
   const [expanded, setExpanded] = useState(false);
+  const [jobs, setJobs] = useState<WorkflowJob[]>([]);
   const colors = statusColor(run.status, run.conclusion);
   const [owner, repo] = run.repository.full_name.split('/');
 
   const isActive = run.status === 'in_progress' || run.status === 'queued' || run.status === 'waiting' || run.status === 'pending' || run.status === 'requested';
+
+  // Auto-fetch jobs for active runs to surface environment and current job
+  useEffect(() => {
+    if (!token || !isActive) return;
+    let cancelled = false;
+
+    getRunJobs(token, owner, repo, run.id)
+      .then((data) => { if (!cancelled) setJobs(data.jobs); })
+      .catch(() => {});
+
+    return () => { cancelled = true; };
+  }, [token, owner, repo, run.id, isActive, refreshCycle]);
+
+  // Derive environment: prefer job.environment, fall back to run.inputs
+  const environment = useMemo(() => {
+    for (const job of jobs) {
+      if (job.environment) return job.environment;
+    }
+    return getEnvironment(run.inputs);
+  }, [jobs, run.inputs]);
+
+  // Derive current running job with step progress
+  const currentJob = useMemo(() => {
+    if (!isActive || jobs.length === 0) return null;
+    const active = jobs.find((j) => j.status === 'in_progress');
+    if (!active) {
+      const queued = jobs.find((j) => j.status === 'queued' || j.status === 'waiting');
+      if (queued) return { name: queued.name, completedSteps: 0, totalSteps: queued.steps.length };
+      return null;
+    }
+    const completedSteps = active.steps.filter((s) => s.status === 'completed').length;
+    return { name: active.name, completedSteps, totalSteps: active.steps.length };
+  }, [isActive, jobs]);
 
   return (
     <div
@@ -100,12 +144,35 @@ export default function WorkflowCard({ run, isNew, refreshCycle = 0 }: WorkflowC
                 {run.repository.full_name}
               </a>
             </div>
-            <h3 className="text-sm font-semibold text-white truncate">
-              {run.name}
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-white truncate">
+                {run.name}
+              </h3>
+              {environment && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-purple-500/15 text-purple-400 border border-purple-500/20 flex-shrink-0">
+                  <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z" />
+                  </svg>
+                  {environment}
+                </span>
+              )}
+            </div>
             <p className="text-xs text-gray-400 truncate mt-0.5">
               {run.display_title}
             </p>
+            {currentJob && (
+              <div className="flex items-center gap-1.5 mt-1.5">
+                <div className="w-3 h-3 flex-shrink-0 flex items-center justify-center">
+                  <div className="w-2.5 h-2.5 border-[1.5px] border-yellow-400 border-t-transparent rounded-full animate-spin" />
+                </div>
+                <span className="text-[11px] text-yellow-300 truncate">{currentJob.name}</span>
+                {currentJob.totalSteps > 0 && (
+                  <span className="text-[10px] text-gray-500 flex-shrink-0">
+                    step {currentJob.completedSteps}/{currentJob.totalSteps}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           <StatusBadge status={run.status} conclusion={run.conclusion} />
         </div>

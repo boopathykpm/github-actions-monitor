@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { getWorkflowRuns, type WorkflowRun } from '../lib/github';
 import WorkflowCard from './WorkflowCard';
+import NotificationToast, { type Notification } from './NotificationToast';
 
 interface DashboardProps {
   monitoredRepos: string[];
@@ -50,6 +51,8 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
   const [countdown, setCountdown] = useState(intervalSec);
   const knownRunIdsRef = useRef<Set<number>>(new Set());
   const isFirstFetchRef = useRef(true);
+  const activeRunsRef = useRef<Map<number, WorkflowRun>>(new Map());
+  const [notifications, setNotifications] = useState<Notification[]>([]);
 
   // Detect whether any fetched runs are still active
   const hasActiveRuns = useMemo(() => {
@@ -111,6 +114,36 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
       isFirstFetchRef.current = false;
     }
 
+    // Detect active-to-completed transitions for toast notifications
+    if (!isFirstFetchRef.current) {
+      const completedTransitions: Notification[] = [];
+      for (const run of allFetchedRuns) {
+        if (run.status === 'completed' && activeRunsRef.current.has(run.id)) {
+          completedTransitions.push({
+            id: `${run.id}-${Date.now()}`,
+            conclusion: run.conclusion || 'success',
+            repoName: run.repository.full_name,
+            workflowName: run.name,
+            runNumber: run.run_number,
+            htmlUrl: run.html_url,
+            timestamp: Date.now(),
+          });
+        }
+      }
+      if (completedTransitions.length > 0) {
+        setNotifications((prev) => [...prev, ...completedTransitions]);
+      }
+    }
+
+    // Update active runs snapshot for next comparison
+    const nextActive = new Map<number, WorkflowRun>();
+    for (const run of allFetchedRuns) {
+      if (ACTIVE_STATUSES.has(run.status)) {
+        nextActive.set(run.id, run);
+      }
+    }
+    activeRunsRef.current = nextActive;
+
     knownRunIdsRef.current = freshIds;
     setRuns(results);
     setLastRefresh(new Date());
@@ -143,6 +176,10 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
     setCountdown(sec);
   }
 
+  const dismissNotification = useCallback((id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
+  }, []);
+
   const activeRunCount = useMemo(() => {
     let count = 0;
     for (const repoRuns of runs.values()) {
@@ -153,30 +190,35 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
     return count;
   }, [runs]);
 
-  // Derive: latest run per (repo, workflow_name), grouped by repo, split by status
+  // Derive runs grouped by status category and repo.
+  // Active runs (running/waiting) keep ALL concurrent instances.
+  // Completed runs (success/failure) deduplicate to latest per workflow name.
   const sections = useMemo(() => {
-    // 1. For each repo, for each unique workflow name, keep only the latest run
-    const latestRuns: WorkflowRun[] = [];
+    const selectedRuns: WorkflowRun[] = [];
 
     for (const repoRuns of runs.values()) {
-      const byWorkflow = new Map<string, WorkflowRun>();
-      // runs are already sorted newest-first from the API
+      const completedByWorkflow = new Map<string, WorkflowRun>();
+
       for (const run of repoRuns) {
-        const key = run.name; // workflow name
-        if (!byWorkflow.has(key)) {
-          byWorkflow.set(key, run);
+        if (ACTIVE_STATUSES.has(run.status)) {
+          selectedRuns.push(run);
+        } else {
+          // Runs arrive newest-first; keep only the latest per workflow name
+          if (!completedByWorkflow.has(run.name)) {
+            completedByWorkflow.set(run.name, run);
+          }
         }
       }
-      latestRuns.push(...byWorkflow.values());
+
+      selectedRuns.push(...completedByWorkflow.values());
     }
 
-    // 2. Categorize each run
     const categorized = new Map<StatusCategory, Map<string, WorkflowRun[]>>();
     for (const cat of ['running', 'waiting', 'failure', 'success'] as StatusCategory[]) {
       categorized.set(cat, new Map());
     }
 
-    for (const run of latestRuns) {
+    for (const run of selectedRuns) {
       const cat = categorizeRun(run);
       const repoMap = categorized.get(cat)!;
       const repoName = run.repository.full_name;
@@ -186,7 +228,7 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
       repoMap.get(repoName)!.push(run);
     }
 
-    // 3. Sort workflows within each repo by most recent first
+    // Sort workflows within each repo by most recent first
     for (const repoMap of categorized.values()) {
       for (const [repo, wfRuns] of repoMap) {
         repoMap.set(repo, wfRuns.sort((a, b) =>
@@ -359,6 +401,8 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
           </p>
         </div>
       )}
+
+      <NotificationToast notifications={notifications} onDismiss={dismissNotification} />
     </div>
   );
 }

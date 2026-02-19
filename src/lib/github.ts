@@ -69,6 +69,7 @@ export interface WorkflowRun {
     full_name: string;
     html_url: string;
   };
+  inputs: Record<string, string> | null;
 }
 
 export interface WorkflowStep {
@@ -89,6 +90,7 @@ export interface WorkflowJob {
   completed_at: string | null;
   html_url: string;
   steps: WorkflowStep[];
+  environment?: string;
 }
 
 // ---------- API Functions ----------
