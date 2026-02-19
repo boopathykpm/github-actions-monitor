@@ -34,6 +34,7 @@ export interface Notification {
   repoName: string;
   workflowName: string;
   runNumber: number;
+  branch: string;
   htmlUrl: string;
   timestamp: number;
 }
@@ -114,7 +115,9 @@ function ToastItem({ notification, onDismiss }: { notification: Notification; on
         <div className="mt-1.5 ml-6">
           <div className="text-sm text-white font-medium truncate">{notification.workflowName}</div>
           <div className="text-xs text-gray-400 truncate mt-0.5">
-            {notification.repoName} <span className="text-gray-600">#{notification.runNumber}</span>
+            {notification.repoName} <span className="text-gray-600">#{notification.runNumber}</span><br/>
+            <span className="text-gray-600 mx-1">&middot;</span>
+            <span className="text-gray-500">{notification.branch}</span>
           </div>
           <a
             href={notification.htmlUrl}

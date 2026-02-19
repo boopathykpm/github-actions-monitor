@@ -165,7 +165,7 @@ export default function WorkflowCard({ run, isNew, refreshCycle = 0 }: WorkflowC
                 <div className="w-3 h-3 flex-shrink-0 flex items-center justify-center">
                   <div className="w-2.5 h-2.5 border-[1.5px] border-yellow-400 border-t-transparent rounded-full animate-spin" />
                 </div>
-                <span className="text-[11px] text-yellow-300 truncate">{currentJob.name}</span>
+                <span className="text-[11px] text-yellow-300 truncate" title={currentJob.name}>{currentJob.name}</span>
                 {currentJob.totalSteps > 0 && (
                   <span className="text-[10px] text-gray-500 flex-shrink-0">
                     step {currentJob.completedSteps}/{currentJob.totalSteps}

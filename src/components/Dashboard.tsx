@@ -10,7 +10,7 @@ interface DashboardProps {
 }
 
 const REFRESH_OPTIONS = [15, 30, 60, 120] as const; // seconds (idle interval)
-const ACTIVE_POLL_INTERVAL = 10; // seconds — fast poll when runs are in progress
+const ACTIVE_POLL_INTERVAL = 15; // seconds — fast poll when runs are in progress
 const REFRESH_KEY = 'gha_monitor_refresh';
 
 function getSavedInterval(): number {
@@ -80,8 +80,24 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
       monitoredRepos.map(async (fullName) => {
         const [owner, repo] = fullName.split('/');
         try {
-          const data = await getWorkflowRuns(token, owner, repo, 30);
-          results.set(fullName, data.workflow_runs);
+          const [recent, inProgress, queued] = await Promise.all([
+            getWorkflowRuns(token, owner, repo, 30),
+            getWorkflowRuns(token, owner, repo, 10, 'in_progress'),
+            getWorkflowRuns(token, owner, repo, 10, 'queued'),
+          ]);
+
+          // Merge and deduplicate by run.id, preferring the most recently updated entry
+          const byId = new Map<number, WorkflowRun>();
+          for (const run of recent.workflow_runs) {
+            byId.set(run.id, run);
+          }
+          for (const run of [...inProgress.workflow_runs, ...queued.workflow_runs]) {
+            const existing = byId.get(run.id);
+            if (!existing || new Date(run.updated_at) >= new Date(existing.updated_at)) {
+              byId.set(run.id, run);
+            }
+          }
+          results.set(fullName, Array.from(byId.values()));
         } catch (err) {
           console.error(`Failed to fetch runs for ${fullName}:`, err);
           results.set(fullName, []);
@@ -125,6 +141,7 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
             repoName: run.repository.full_name,
             workflowName: run.name,
             runNumber: run.run_number,
+            branch: run.head_branch,
             htmlUrl: run.html_url,
             timestamp: Date.now(),
           });

@@ -76,7 +76,7 @@ function StepRow({ step }: { step: WorkflowStep }) {
   return (
     <div className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-gray-800/50 transition-colors">
       <StepStatusIcon status={step.status} conclusion={step.conclusion} />
-      <span className="text-sm text-gray-300 flex-1 truncate">{step.name}</span>
+      <span className="text-sm text-gray-300 flex-1 truncate" title={step.name}>{step.name}</span>
       <span className="text-xs text-gray-500 font-mono flex-shrink-0">
         {formatDuration(step.started_at, step.completed_at)}
       </span>
@@ -140,7 +140,7 @@ export default function StepsList({ owner, repo, runId, refreshCycle }: StepsLis
           {/* Job header */}
           <div className="flex items-center gap-2 px-2 py-1">
             <StepStatusIcon status={job.status} conclusion={job.conclusion} />
-            <span className="text-sm font-medium text-gray-200">{job.name}</span>
+            <span className="text-sm font-medium text-gray-200" title={job.name}>{job.name}</span>
             <span className="text-xs text-gray-500 font-mono ml-auto">
               {formatDuration(job.started_at, job.completed_at)}
             </span>

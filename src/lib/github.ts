@@ -118,12 +118,12 @@ export async function getWorkflowRuns(
   token: string,
   owner: string,
   repo: string,
-  perPage = 5
+  perPage = 5,
+  status?: string
 ): Promise<{ total_count: number; workflow_runs: WorkflowRun[] }> {
-  return ghFetch(
-    token,
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs?per_page=${perPage}`
-  );
+  let path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs?per_page=${perPage}`;
+  if (status) path += `&status=${encodeURIComponent(status)}`;
+  return ghFetch(token, path);
 }
 
 export async function getRunJobs(
