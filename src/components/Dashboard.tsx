@@ -6,12 +6,21 @@ import NotificationToast, { type Notification } from './NotificationToast';
 
 interface DashboardProps {
   monitoredRepos: string[];
+  monitoredWorkflows: Record<string, string[]>;
   onOpenRepoManager: () => void;
 }
 
 const REFRESH_OPTIONS = [15, 30, 60, 120] as const; // seconds (idle interval)
 const ACTIVE_POLL_INTERVAL = 15; // seconds — fast poll when runs are in progress
 const REFRESH_KEY = 'gha_monitor_refresh';
+const SORT_KEY = 'gha_monitor_repo_sort';
+
+type RepoSort = 'recent' | 'alpha';
+
+function getSavedSort(): RepoSort {
+  const saved = localStorage.getItem(SORT_KEY);
+  return saved === 'alpha' ? 'alpha' : 'recent';
+}
 
 function getSavedInterval(): number {
   const saved = localStorage.getItem(REFRESH_KEY);
@@ -40,7 +49,7 @@ function categorizeRun(run: WorkflowRun): StatusCategory {
   return 'success'; // success, cancelled, skipped, neutral, etc.
 }
 
-export default function Dashboard({ monitoredRepos, onOpenRepoManager }: DashboardProps) {
+export default function Dashboard({ monitoredRepos, monitoredWorkflows, onOpenRepoManager }: DashboardProps) {
   const { token } = useAuth();
   const [runs, setRuns] = useState<Map<string, WorkflowRun[]>>(new Map());
   const [loading, setLoading] = useState(false);
@@ -53,6 +62,7 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
   const isFirstFetchRef = useRef(true);
   const activeRunsRef = useRef<Map<number, WorkflowRun>>(new Map());
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [repoSort, setRepoSort] = useState<RepoSort>(getSavedSort);
 
   // Detect whether any fetched runs are still active
   const hasActiveRuns = useMemo(() => {
@@ -213,14 +223,19 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
   const sections = useMemo(() => {
     const selectedRuns: WorkflowRun[] = [];
 
-    for (const repoRuns of runs.values()) {
+    for (const [repoFullName, repoRuns] of runs.entries()) {
+      const filter = monitoredWorkflows[repoFullName];
+      const hasFilter = filter && filter.length > 0 && filter[0] !== '__none__';
+      const isNone = filter && filter[0] === '__none__';
       const completedByWorkflow = new Map<string, WorkflowRun>();
 
       for (const run of repoRuns) {
+        if (isNone) continue;
+        if (hasFilter && !filter.includes(run.name)) continue;
+
         if (ACTIVE_STATUSES.has(run.status)) {
           selectedRuns.push(run);
         } else {
-          // Runs arrive newest-first; keep only the latest per workflow name
           if (!completedByWorkflow.has(run.name)) {
             completedByWorkflow.set(run.name, run);
           }
@@ -255,7 +270,7 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
     }
 
     return categorized;
-  }, [runs]);
+  }, [runs, monitoredWorkflows]);
 
   const totalLatest = Array.from(sections.values()).reduce(
     (acc, repoMap) => acc + Array.from(repoMap.values()).reduce((a, r) => a + r.length, 0),
@@ -295,6 +310,27 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
           )}
         </div>
         <div className="flex items-center gap-3">
+          {/* Repo sort toggle */}
+          <div className="flex items-center bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+            <button
+              onClick={() => { setRepoSort('recent'); localStorage.setItem(SORT_KEY, 'recent'); }}
+              className={`px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                repoSort === 'recent' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'
+              }`}
+              title="Sort repos by most recent activity"
+            >
+              Recent
+            </button>
+            <button
+              onClick={() => { setRepoSort('alpha'); localStorage.setItem(SORT_KEY, 'alpha'); }}
+              className={`px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                repoSort === 'alpha' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'
+              }`}
+              title="Sort repos alphabetically"
+            >
+              A-Z
+            </button>
+          </div>
           {/* Fast-refresh indicator */}
           {hasActiveRuns && (
             <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
@@ -377,7 +413,8 @@ export default function Dashboard({ monitoredRepos, onOpenRepoManager }: Dashboa
             {/* Repo groups within this status */}
             <div className="space-y-6">
               {Array.from(repoMap.entries())
-                .sort(([, aRuns], [, bRuns]) => {
+                .sort(([aName, aRuns], [bName, bRuns]) => {
+                  if (repoSort === 'alpha') return aName.localeCompare(bName);
                   const aLatest = Math.max(...aRuns.map((r) => new Date(r.updated_at).getTime()));
                   const bLatest = Math.max(...bRuns.map((r) => new Date(r.updated_at).getTime()));
                   return bLatest - aLatest;

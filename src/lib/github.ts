@@ -16,6 +16,13 @@ async function ghFetch<T>(token: string, path: string): Promise<T> {
   return res.json();
 }
 
+async function ghPost(token: string, path: string): Promise<void> {
+  const res = await fetch(`${API}${path}`, { method: 'POST', headers: headers(token) });
+  if (!res.ok) {
+    throw new Error(`GitHub API error: ${res.status} ${res.statusText}`);
+  }
+}
+
 // ---------- Types ----------
 
 export interface GitHubUser {
@@ -81,6 +88,13 @@ export interface WorkflowStep {
   completed_at: string | null;
 }
 
+export interface GitHubWorkflow {
+  id: number;
+  name: string;
+  path: string;
+  state: string;
+}
+
 export interface WorkflowJob {
   id: number;
   name: string;
@@ -124,6 +138,33 @@ export async function getWorkflowRuns(
   let path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs?per_page=${perPage}`;
   if (status) path += `&status=${encodeURIComponent(status)}`;
   return ghFetch(token, path);
+}
+
+export async function getRepoWorkflows(
+  token: string,
+  owner: string,
+  repo: string
+): Promise<{ total_count: number; workflows: GitHubWorkflow[] }> {
+  return ghFetch(
+    token,
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/workflows?per_page=100`
+  );
+}
+
+export async function rerunWorkflow(token: string, owner: string, repo: string, runId: number): Promise<void> {
+  return ghPost(token, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/rerun`);
+}
+
+export async function rerunFailedJobs(token: string, owner: string, repo: string, runId: number): Promise<void> {
+  return ghPost(token, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/rerun-failed-jobs`);
+}
+
+export async function rerunJob(token: string, owner: string, repo: string, jobId: number): Promise<void> {
+  return ghPost(token, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/jobs/${jobId}/rerun`);
+}
+
+export async function cancelWorkflowRun(token: string, owner: string, repo: string, runId: number): Promise<void> {
+  return ghPost(token, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs/${runId}/cancel`);
 }
 
 export async function getRunJobs(

@@ -6,6 +6,7 @@ import RepoManager from './components/RepoManager';
 import Dashboard from './components/Dashboard';
 
 const REPOS_KEY = 'gha_monitor_repos';
+const WORKFLOWS_KEY = 'gha_monitor_workflows';
 
 export default function App() {
   const { user, loading, logout } = useAuth();
@@ -17,6 +18,13 @@ export default function App() {
       return [];
     }
   });
+  const [monitoredWorkflows, setMonitoredWorkflows] = useState<Record<string, string[]>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem(WORKFLOWS_KEY) || '{}');
+    } catch {
+      return {};
+    }
+  });
   const [showRepoManager, setShowRepoManager] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
 
@@ -24,6 +32,23 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(REPOS_KEY, JSON.stringify(monitoredRepos));
   }, [monitoredRepos]);
+
+  // Persist workflow selections
+  useEffect(() => {
+    localStorage.setItem(WORKFLOWS_KEY, JSON.stringify(monitoredWorkflows));
+  }, [monitoredWorkflows]);
+
+  // Clean up workflow selections when repos are removed
+  function handleReposChange(repos: string[]) {
+    setMonitoredRepos(repos);
+    setMonitoredWorkflows((prev) => {
+      const next: Record<string, string[]> = {};
+      for (const repo of repos) {
+        if (prev[repo]) next[repo] = prev[repo];
+      }
+      return next;
+    });
+  }
 
   // Loading state
   if (loading) {
@@ -143,6 +168,7 @@ export default function App() {
         ) : (
           <Dashboard
             monitoredRepos={monitoredRepos}
+            monitoredWorkflows={monitoredWorkflows}
             onOpenRepoManager={() => setShowRepoManager(true)}
           />
         )}
@@ -153,7 +179,9 @@ export default function App() {
         <RepoManager
           org={selectedOrg}
           monitoredRepos={monitoredRepos}
-          onReposChange={setMonitoredRepos}
+          monitoredWorkflows={monitoredWorkflows}
+          onReposChange={handleReposChange}
+          onWorkflowsChange={setMonitoredWorkflows}
           onClose={() => setShowRepoManager(false)}
         />
       )}

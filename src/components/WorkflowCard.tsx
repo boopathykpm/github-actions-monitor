@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { getRunJobs, type WorkflowRun, type WorkflowJob } from '../lib/github';
+import { getRunJobs, rerunWorkflow, rerunFailedJobs, cancelWorkflowRun, type WorkflowRun, type WorkflowJob } from '../lib/github';
 import StepsList from './StepsList';
 
 interface WorkflowCardProps {
@@ -97,6 +97,25 @@ export default function WorkflowCard({ run, isNew, refreshCycle = 0 }: WorkflowC
     }
     return getEnvironment(run.inputs);
   }, [jobs, run.inputs]);
+
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionResult, setActionResult] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const runAction = useCallback(async (label: string, action: () => Promise<void>) => {
+    if (!token) return;
+    setActionLoading(label);
+    setActionResult(null);
+    try {
+      await action();
+      setActionResult({ type: 'success', message: `${label} triggered` });
+      setTimeout(() => setActionResult(null), 4000);
+    } catch (err) {
+      setActionResult({ type: 'error', message: err instanceof Error ? err.message : 'Failed' });
+      setTimeout(() => setActionResult(null), 5000);
+    } finally {
+      setActionLoading(null);
+    }
+  }, [token]);
 
   // Derive current running job with step progress
   const currentJob = useMemo(() => {
@@ -234,7 +253,64 @@ export default function WorkflowCard({ run, isNew, refreshCycle = 0 }: WorkflowC
       {/* Expanded Steps */}
       {expanded && (
         <div className="border-t border-gray-800/50 bg-gray-950/30">
-          <div className="max-h-72 overflow-y-auto p-4">
+          {/* Action bar */}
+          <div className="flex items-center gap-2 px-4 pt-3 pb-1">
+            {isActive ? (
+              <button
+                onClick={() => runAction('Cancel', () => cancelWorkflowRun(token!, owner, repo, run.id))}
+                disabled={actionLoading !== null}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20 rounded-lg hover:bg-red-500/20 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {actionLoading === 'Cancel' ? (
+                  <div className="w-3 h-3 border-[1.5px] border-red-400 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                )}
+                Cancel run
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={() => runAction('Re-run all', () => rerunWorkflow(token!, owner, repo, run.id))}
+                  disabled={actionLoading !== null}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-gray-700/50 text-gray-300 border border-gray-600/30 rounded-lg hover:bg-gray-700 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {actionLoading === 'Re-run all' ? (
+                    <div className="w-3 h-3 border-[1.5px] border-gray-400 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  )}
+                  Re-run all
+                </button>
+                {run.conclusion === 'failure' && (
+                  <button
+                    onClick={() => runAction('Re-run failed', () => rerunFailedJobs(token!, owner, repo, run.id))}
+                    disabled={actionLoading !== null}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium bg-orange-500/10 text-orange-400 border border-orange-500/20 rounded-lg hover:bg-orange-500/20 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {actionLoading === 'Re-run failed' ? (
+                      <div className="w-3 h-3 border-[1.5px] border-orange-400 border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    )}
+                    Re-run failed
+                  </button>
+                )}
+              </>
+            )}
+            {actionResult && (
+              <span className={`text-xs ${actionResult.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>
+                {actionResult.message}
+              </span>
+            )}
+          </div>
+          <div className="max-h-72 overflow-y-auto p-4 pt-2">
             <StepsList
               owner={owner}
               repo={repo}

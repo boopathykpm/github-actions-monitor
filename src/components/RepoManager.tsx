@@ -1,26 +1,156 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { getOrgRepos, type GitHubRepo } from '../lib/github';
+import { getOrgRepos, getRepoWorkflows, type GitHubRepo, type GitHubWorkflow } from '../lib/github';
 
 const REPOS_KEY = 'gha_monitor_repos';
+const WORKFLOWS_KEY = 'gha_monitor_workflows';
 
 interface RepoManagerProps {
   org: string;
   monitoredRepos: string[];
+  monitoredWorkflows: Record<string, string[]>;
   onReposChange: (repos: string[]) => void;
+  onWorkflowsChange: (workflows: Record<string, string[]>) => void;
   onClose: () => void;
+}
+
+function WorkflowSelector({
+  repoFullName,
+  selectedWorkflows,
+  onWorkflowsChange,
+}: {
+  repoFullName: string;
+  selectedWorkflows: string[];
+  onWorkflowsChange: (repoFullName: string, workflows: string[]) => void;
+}) {
+  const { token } = useAuth();
+  const [workflows, setWorkflows] = useState<GitHubWorkflow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const fetched = useRef(false);
+
+  useEffect(() => {
+    if (!token || fetched.current) return;
+    fetched.current = true;
+    const [owner, repo] = repoFullName.split('/');
+    getRepoWorkflows(token, owner, repo)
+      .then((data) => setWorkflows(data.workflows.filter((w) => w.state === 'active')))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [token, repoFullName]);
+
+  const allSelected = selectedWorkflows.length === 0;
+
+  function toggleWorkflow(name: string) {
+    if (allSelected) {
+      // Switching from "all" to specific: select all except the toggled one
+      const all = workflows.map((w) => w.name).filter((n) => n !== name);
+      onWorkflowsChange(repoFullName, all);
+    } else if (selectedWorkflows.includes(name)) {
+      const updated = selectedWorkflows.filter((n) => n !== name);
+      // If nothing left or everything selected, reset to "all"
+      if (updated.length === 0 || updated.length === workflows.length) {
+        onWorkflowsChange(repoFullName, []);
+      } else {
+        onWorkflowsChange(repoFullName, updated);
+      }
+    } else {
+      const updated = [...selectedWorkflows, name];
+      if (updated.length === workflows.length) {
+        onWorkflowsChange(repoFullName, []);
+      } else {
+        onWorkflowsChange(repoFullName, updated);
+      }
+    }
+  }
+
+  function selectAllWorkflows() {
+    onWorkflowsChange(repoFullName, []);
+  }
+
+  function clearAllWorkflows() {
+    onWorkflowsChange(repoFullName, ['__none__']);
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 py-2 pl-10">
+        <div className="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+        <span className="text-xs text-gray-500">Loading workflows...</span>
+      </div>
+    );
+  }
+
+  if (workflows.length === 0) {
+    return (
+      <div className="py-2 pl-10 text-xs text-gray-500">No active workflows found</div>
+    );
+  }
+
+  const isChecked = (name: string) => allSelected || selectedWorkflows.includes(name);
+
+  return (
+    <div className="pl-8 pr-3 pb-2 space-y-0.5">
+      <div className="flex items-center gap-2 mb-1">
+        <button
+          onClick={selectAllWorkflows}
+          className="px-2 py-0.5 text-[10px] bg-blue-600/20 text-blue-400 rounded hover:bg-blue-600/30 transition-colors cursor-pointer"
+        >
+          All
+        </button>
+        <button
+          onClick={clearAllWorkflows}
+          className="px-2 py-0.5 text-[10px] bg-gray-700/50 text-gray-400 rounded hover:bg-gray-700 transition-colors cursor-pointer"
+        >
+          None
+        </button>
+        {!allSelected && (
+          <span className="text-[10px] text-gray-500">
+            {selectedWorkflows.filter((n) => n !== '__none__').length} of {workflows.length}
+          </span>
+        )}
+      </div>
+      {workflows.map((wf) => (
+        <button
+          key={wf.id}
+          onClick={() => toggleWorkflow(wf.name)}
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-gray-800/50 transition-colors cursor-pointer"
+        >
+          <div
+            className={`w-4 h-4 rounded flex-shrink-0 flex items-center justify-center border transition-colors ${
+              isChecked(wf.name)
+                ? 'bg-purple-500 border-purple-500'
+                : 'border-gray-600 bg-gray-800'
+            }`}
+          >
+            {isChecked(wf.name) && (
+              <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+          </div>
+          <span className="text-xs text-gray-300 truncate" title={wf.name}>{wf.name}</span>
+          <span className="text-[10px] text-gray-600 truncate ml-auto flex-shrink-0" title={wf.path}>
+            {wf.path.replace('.github/workflows/', '')}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export default function RepoManager({
   org,
   monitoredRepos,
+  monitoredWorkflows,
   onReposChange,
+  onWorkflowsChange,
   onClose,
 }: RepoManagerProps) {
   const { token } = useAuth();
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
+  const [expandedRepo, setExpandedRepo] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token || !org) return;
@@ -35,6 +165,7 @@ export default function RepoManager({
     let updated: string[];
     if (monitoredRepos.includes(fullName)) {
       updated = monitoredRepos.filter((r) => r !== fullName);
+      if (expandedRepo === fullName) setExpandedRepo(null);
     } else {
       updated = [...monitoredRepos, fullName];
     }
@@ -54,6 +185,13 @@ export default function RepoManager({
     const updated = monitoredRepos.filter((r) => !filtered.includes(r));
     localStorage.setItem(REPOS_KEY, JSON.stringify(updated));
     onReposChange(updated);
+  }
+
+  function handleWorkflowsChange(repoFullName: string, workflows: string[]) {
+    const updated = { ...monitoredWorkflows, [repoFullName]: workflows };
+    if (workflows.length === 0) delete updated[repoFullName];
+    localStorage.setItem(WORKFLOWS_KEY, JSON.stringify(updated));
+    onWorkflowsChange(updated);
   }
 
   const filteredRepos = repos.filter((r) =>
@@ -123,45 +261,86 @@ export default function RepoManager({
           ) : (
             filteredRepos.map((repo) => {
               const isMonitored = monitoredRepos.includes(repo.full_name);
+              const isExpanded = expandedRepo === repo.full_name;
+              const hasFilter = monitoredWorkflows[repo.full_name]?.length > 0;
               return (
-                <button
-                  key={repo.id}
-                  onClick={() => toggleRepo(repo.full_name)}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-colors cursor-pointer mb-0.5 ${
-                    isMonitored
-                      ? 'bg-blue-600/10 border border-blue-500/20'
-                      : 'hover:bg-gray-800 border border-transparent'
-                  }`}
-                >
+                <div key={repo.id} className="mb-0.5">
                   <div
-                    className={`w-5 h-5 rounded flex-shrink-0 flex items-center justify-center border transition-colors ${
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors ${
                       isMonitored
-                        ? 'bg-blue-500 border-blue-500'
-                        : 'border-gray-600 bg-gray-800'
+                        ? 'bg-blue-600/10 border border-blue-500/20'
+                        : 'hover:bg-gray-800 border border-transparent'
                     }`}
                   >
-                    {isMonitored && (
-                      <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                      </svg>
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-medium text-gray-200 truncate">
-                      {repo.name}
-                    </div>
-                    {repo.description && (
-                      <div className="text-xs text-gray-500 truncate">
-                        {repo.description}
+                    <button
+                      onClick={() => toggleRepo(repo.full_name)}
+                      className="flex items-center gap-3 flex-1 min-w-0 text-left cursor-pointer"
+                    >
+                      <div
+                        className={`w-5 h-5 rounded flex-shrink-0 flex items-center justify-center border transition-colors ${
+                          isMonitored
+                            ? 'bg-blue-500 border-blue-500'
+                            : 'border-gray-600 bg-gray-800'
+                        }`}
+                      >
+                        {isMonitored && (
+                          <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
                       </div>
-                    )}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-gray-200 truncate">
+                          {repo.name}
+                        </div>
+                        {repo.description && (
+                          <div className="text-xs text-gray-500 truncate">
+                            {repo.description}
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      {hasFilter && (
+                        <span className="text-[10px] px-1.5 py-0.5 bg-purple-500/15 text-purple-400 rounded-full border border-purple-500/20">
+                          filtered
+                        </span>
+                      )}
+                      {repo.private && (
+                        <span className="text-xs px-1.5 py-0.5 bg-yellow-900/30 text-yellow-500 rounded">
+                          Private
+                        </span>
+                      )}
+                      {isMonitored && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedRepo(isExpanded ? null : repo.full_name);
+                          }}
+                          className="p-1 hover:bg-gray-700 rounded transition-colors cursor-pointer"
+                          title="Filter workflows"
+                        >
+                          <svg
+                            className={`w-4 h-4 text-gray-400 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                            strokeWidth={2}
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  {repo.private && (
-                    <span className="text-xs px-1.5 py-0.5 bg-yellow-900/30 text-yellow-500 rounded flex-shrink-0">
-                      Private
-                    </span>
+                  {isMonitored && isExpanded && (
+                    <WorkflowSelector
+                      repoFullName={repo.full_name}
+                      selectedWorkflows={monitoredWorkflows[repo.full_name] || []}
+                      onWorkflowsChange={handleWorkflowsChange}
+                    />
                   )}
-                </button>
+                </div>
               );
             })
           )}
