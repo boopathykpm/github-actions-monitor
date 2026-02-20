@@ -16,25 +16,25 @@ export default function LoginPage() {
         <div className="bg-gray-900 border border-gray-800 rounded-2xl p-8 shadow-2xl">
           {/* Logo */}
           <div className="text-center mb-8">
-            <div className="w-20 h-20 mx-auto bg-gray-800 rounded-2xl flex items-center justify-center mb-4">
-              <svg
-                className="w-10 h-10 text-green-400"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={1.5}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                />
+            <div className="w-16 h-16 mx-auto mb-5">
+              <svg viewBox="0 0 28 28" fill="none">
+                <rect x="1" y="1" width="26" height="26" rx="6" stroke="url(#loginGrad)" strokeWidth="1.5" />
+                <path d="M8 14h3l2-4 3 8 2-4h3" stroke="url(#loginGrad)" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                <defs>
+                  <linearGradient id="loginGrad" x1="2" y1="2" x2="26" y2="26">
+                    <stop stopColor="#4ade80" />
+                    <stop offset="1" stopColor="#60a5fa" />
+                  </linearGradient>
+                </defs>
               </svg>
             </div>
-            <h1 className="text-2xl font-bold text-white mb-2">
-              GitHub Actions Monitor
+            <h1 className="text-2xl font-bold mb-1">
+              <span className="bg-gradient-to-r from-green-400 to-blue-400 bg-clip-text text-transparent">IGAM</span>
             </h1>
-            <p className="text-gray-400 text-sm">
+            <p className="text-sm text-gray-300 font-medium mb-1">
+              Integrated GitHub Actions Monitor
+            </p>
+            <p className="text-gray-500 text-xs">
               Monitor workflow runs across multiple repositories in real-time.
             </p>
           </div>

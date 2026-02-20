@@ -3,17 +3,23 @@ import { useAuth } from '../context/AuthContext';
 import { getWorkflowRuns, type WorkflowRun } from '../lib/github';
 import WorkflowCard from './WorkflowCard';
 import NotificationToast, { type Notification } from './NotificationToast';
+import type { AwsAccount } from './AwsAccountManager';
 
 interface DashboardProps {
   monitoredRepos: string[];
   monitoredWorkflows: Record<string, string[]>;
+  awsAccounts: AwsAccount[];
+  envFilter: string | null;
   onOpenRepoManager: () => void;
 }
 
 const REFRESH_OPTIONS = [15, 30, 60, 120] as const; // seconds (idle interval)
 const ACTIVE_POLL_INTERVAL = 15; // seconds — fast poll when runs are in progress
+const TIME_RANGE_OPTIONS = [6, 12, 18, 24, 32, 48] as const; // hours
 const REFRESH_KEY = 'gha_monitor_refresh';
 const SORT_KEY = 'gha_monitor_repo_sort';
+const COLLAPSED_KEY = 'gha_monitor_collapsed';
+const TIME_RANGE_KEY = 'gha_monitor_time_range';
 
 type RepoSort = 'recent' | 'alpha';
 
@@ -26,6 +32,12 @@ function getSavedInterval(): number {
   const saved = localStorage.getItem(REFRESH_KEY);
   const parsed = saved ? Number(saved) : 60;
   return REFRESH_OPTIONS.includes(parsed as typeof REFRESH_OPTIONS[number]) ? parsed : 60;
+}
+
+function getSavedTimeRange(): number {
+  const saved = localStorage.getItem(TIME_RANGE_KEY);
+  const parsed = saved ? Number(saved) : 24;
+  return TIME_RANGE_OPTIONS.includes(parsed as typeof TIME_RANGE_OPTIONS[number]) ? parsed : 24;
 }
 
 const ACTIVE_STATUSES = new Set(['in_progress', 'queued', 'waiting', 'pending', 'requested']);
@@ -49,7 +61,7 @@ function categorizeRun(run: WorkflowRun): StatusCategory {
   return 'success'; // success, cancelled, skipped, neutral, etc.
 }
 
-export default function Dashboard({ monitoredRepos, monitoredWorkflows, onOpenRepoManager }: DashboardProps) {
+export default function Dashboard({ monitoredRepos, monitoredWorkflows, awsAccounts, envFilter, onOpenRepoManager }: DashboardProps) {
   const { token } = useAuth();
   const [runs, setRuns] = useState<Map<string, WorkflowRun[]>>(new Map());
   const [loading, setLoading] = useState(false);
@@ -63,6 +75,37 @@ export default function Dashboard({ monitoredRepos, monitoredWorkflows, onOpenRe
   const activeRunsRef = useRef<Map<number, WorkflowRun>>(new Map());
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [repoSort, setRepoSort] = useState<RepoSort>(getSavedSort);
+  const [timeRangeHours, setTimeRangeHours] = useState(getSavedTimeRange);
+  const [collapsedSections, setCollapsedSections] = useState<Set<StatusCategory>>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || '[]');
+      return new Set(saved as StatusCategory[]);
+    } catch {
+      return new Set();
+    }
+  });
+
+  // Map of runId -> resolved environment string (reported by WorkflowCards)
+  const [resolvedEnvMap, setResolvedEnvMap] = useState<Map<number, string | null>>(new Map());
+
+  const handleEnvironmentResolved = useCallback((runId: number, env: string | null) => {
+    setResolvedEnvMap((prev) => {
+      if (prev.get(runId) === env) return prev;
+      const next = new Map(prev);
+      next.set(runId, env);
+      return next;
+    });
+  }, []);
+
+  function toggleSection(cat: StatusCategory) {
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat);
+      else next.add(cat);
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  }
 
   // Detect whether any fetched runs are still active
   const hasActiveRuns = useMemo(() => {
@@ -203,6 +246,11 @@ export default function Dashboard({ monitoredRepos, monitoredWorkflows, onOpenRe
     setCountdown(sec);
   }
 
+  function changeTimeRange(hours: number) {
+    localStorage.setItem(TIME_RANGE_KEY, String(hours));
+    setTimeRangeHours(hours);
+  }
+
   const dismissNotification = useCallback((id: string) => {
     setNotifications((prev) => prev.filter((n) => n.id !== id));
   }, []);
@@ -227,7 +275,7 @@ export default function Dashboard({ monitoredRepos, monitoredWorkflows, onOpenRe
       const filter = monitoredWorkflows[repoFullName];
       const hasFilter = filter && filter.length > 0 && filter[0] !== '__none__';
       const isNone = filter && filter[0] === '__none__';
-      const completedByWorkflow = new Map<string, WorkflowRun>();
+      const cutoff = Date.now() - timeRangeHours * 60 * 60 * 1000;
 
       for (const run of repoRuns) {
         if (isNone) continue;
@@ -236,13 +284,10 @@ export default function Dashboard({ monitoredRepos, monitoredWorkflows, onOpenRe
         if (ACTIVE_STATUSES.has(run.status)) {
           selectedRuns.push(run);
         } else {
-          if (!completedByWorkflow.has(run.name)) {
-            completedByWorkflow.set(run.name, run);
-          }
+          if (new Date(run.created_at).getTime() < cutoff) continue;
+          selectedRuns.push(run);
         }
       }
-
-      selectedRuns.push(...completedByWorkflow.values());
     }
 
     const categorized = new Map<StatusCategory, Map<string, WorkflowRun[]>>();
@@ -270,12 +315,27 @@ export default function Dashboard({ monitoredRepos, monitoredWorkflows, onOpenRe
     }
 
     return categorized;
-  }, [runs, monitoredWorkflows]);
+  }, [runs, monitoredWorkflows, timeRangeHours]);
 
   const totalLatest = Array.from(sections.values()).reduce(
     (acc, repoMap) => acc + Array.from(repoMap.values()).reduce((a, r) => a + r.length, 0),
     0
   );
+
+  const envStats = useMemo(() => {
+    const stats = new Map<string, Record<StatusCategory, number>>();
+    for (const [cat, repoMap] of sections.entries()) {
+      for (const repoRuns of repoMap.values()) {
+        for (const run of repoRuns) {
+          const env = resolvedEnvMap.get(run.id);
+          if (!env) continue;
+          if (!stats.has(env)) stats.set(env, { running: 0, waiting: 0, success: 0, failure: 0 });
+          stats.get(env)![cat]++;
+        }
+      }
+    }
+    return stats;
+  }, [sections, resolvedEnvMap]);
 
   if (monitoredRepos.length === 0) {
     return (
@@ -331,6 +391,24 @@ export default function Dashboard({ monitoredRepos, monitoredWorkflows, onOpenRe
               A-Z
             </button>
           </div>
+          {/* Time range filter */}
+          <div className="flex items-center bg-gray-800 border border-gray-700 rounded-lg overflow-hidden">
+            {TIME_RANGE_OPTIONS.map((hours) => (
+              <button
+                key={hours}
+                onClick={() => changeTimeRange(hours)}
+                className={`px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                  timeRangeHours === hours
+                    ? 'bg-blue-600 text-white'
+                    : 'text-gray-400 hover:text-gray-200 hover:bg-gray-700'
+                }`}
+                title={`Show runs from last ${hours} hours`}
+              >
+                {hours}h
+              </button>
+            ))}
+          </div>
+
           {/* Fast-refresh indicator */}
           {hasActiveRuns && (
             <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
@@ -381,6 +459,42 @@ export default function Dashboard({ monitoredRepos, monitoredWorkflows, onOpenRe
         </div>
       </div>
 
+      {/* Environment stats bar */}
+      {envStats.size > 0 && (
+        <div className="flex flex-wrap gap-3 mb-5">
+          {Array.from(envStats.entries())
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([env, counts]) => (
+              <div
+                key={env}
+                className={`flex items-center gap-2.5 px-3 py-1.5 bg-gray-900 border rounded-lg ${
+                  envFilter === env ? 'border-blue-500/40' : 'border-gray-800'
+                }`}
+              >
+                <span className="text-xs font-semibold text-gray-200">{env}</span>
+                <div className="flex items-center gap-2">
+                  <span className={`inline-flex items-center gap-1 text-[11px] ${counts.running > 0 ? 'text-yellow-400' : 'text-gray-600'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${counts.running > 0 ? 'bg-yellow-400' : 'bg-gray-700'}`} />
+                    {counts.running}
+                  </span>
+                  <span className={`inline-flex items-center gap-1 text-[11px] ${counts.waiting > 0 ? 'text-blue-400' : 'text-gray-600'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${counts.waiting > 0 ? 'bg-blue-400' : 'bg-gray-700'}`} />
+                    {counts.waiting}
+                  </span>
+                  <span className={`inline-flex items-center gap-1 text-[11px] ${counts.success > 0 ? 'text-green-400' : 'text-gray-600'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${counts.success > 0 ? 'bg-green-400' : 'bg-gray-700'}`} />
+                    {counts.success}
+                  </span>
+                  <span className={`inline-flex items-center gap-1 text-[11px] ${counts.failure > 0 ? 'text-red-400' : 'text-gray-600'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${counts.failure > 0 ? 'bg-red-400' : 'bg-gray-700'}`} />
+                    {counts.failure}
+                  </span>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
+
       {/* Loading overlay for initial load */}
       {loading && totalLatest === 0 && (
         <div className="flex items-center justify-center py-16">
@@ -399,50 +513,80 @@ export default function Dashboard({ monitoredRepos, monitoredWorkflows, onOpenRe
         const meta = CATEGORY_META[cat];
         const totalInSection = Array.from(repoMap.values()).reduce((a, r) => a + r.length, 0);
 
+        // When env filter is active, compute visible count from resolvedEnvMap
+        const filteredCount = envFilter
+          ? Array.from(repoMap.values()).reduce((a, r) =>
+              a + r.filter((run) => resolvedEnvMap.get(run.id) === envFilter).length, 0)
+          : totalInSection;
+
+        if (filteredCount === 0) return null;
+
+        const collapsible = cat !== 'running';
+        const isCollapsed = collapsible && collapsedSections.has(cat);
+
         return (
           <div key={cat} className="mb-8">
             {/* Section header */}
-            <div className="flex items-center gap-2 mb-4">
+            <div
+              className={`flex items-center gap-2 mb-4 ${collapsible ? 'cursor-pointer select-none group' : ''}`}
+              onClick={collapsible ? () => toggleSection(cat) : undefined}
+            >
               <span className={`w-2.5 h-2.5 rounded-full ${meta.dot}`} />
               <h2 className={`text-sm font-semibold ${meta.textColor}`}>
                 {meta.label}
               </h2>
-              <span className="text-xs text-gray-500">({totalInSection})</span>
+              <span className="text-xs text-gray-500">({filteredCount})</span>
+              {collapsible && (
+                <svg
+                  className={`w-4 h-4 text-gray-500 transition-transform duration-200 group-hover:text-gray-300 ${isCollapsed ? '-rotate-90' : ''}`}
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                </svg>
+              )}
             </div>
 
             {/* Repo groups within this status */}
-            <div className="space-y-6">
-              {Array.from(repoMap.entries())
-                .sort(([aName, aRuns], [bName, bRuns]) => {
-                  if (repoSort === 'alpha') return aName.localeCompare(bName);
-                  const aLatest = Math.max(...aRuns.map((r) => new Date(r.updated_at).getTime()));
-                  const bLatest = Math.max(...bRuns.map((r) => new Date(r.updated_at).getTime()));
-                  return bLatest - aLatest;
-                })
-                .map(([repoFullName, repoRuns]) => (
-                  <div key={repoFullName}>
-                    {/* Repo header */}
-                    <div className="flex items-center gap-2 mb-2 ml-1">
-                      <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
-                      </svg>
-                      <span className="text-xs font-medium text-gray-400">{repoFullName}</span>
-                      <span className="text-[10px] text-gray-600">({repoRuns.length} workflow{repoRuns.length > 1 ? 's' : ''})</span>
-                    </div>
-                    {/* Workflow cards */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                      {repoRuns.map((run) => (
+            {!isCollapsed && (
+              <div className="space-y-6">
+                {Array.from(repoMap.entries())
+                  .sort(([aName, aRuns], [bName, bRuns]) => {
+                    if (repoSort === 'alpha') return aName.localeCompare(bName);
+                    const aLatest = Math.max(...aRuns.map((r) => new Date(r.updated_at).getTime()));
+                    const bLatest = Math.max(...bRuns.map((r) => new Date(r.updated_at).getTime()));
+                    return bLatest - aLatest;
+                  })
+                  .map(([repoFullName, repoRuns]) => (
+                    <div key={repoFullName}>
+                      {/* Repo header */}
+                      <div className="flex items-center gap-2 mb-2 ml-1">
+                        <svg className="w-4 h-4 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+                        </svg>
+                        <span className="text-xs font-medium text-gray-400">{repoFullName}</span>
+                        <span className="text-[10px] text-gray-600">({repoRuns.length} workflow{repoRuns.length > 1 ? 's' : ''})</span>
+                      </div>
+                      {/* Workflow cards */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                        {repoRuns.map((run) => (
                         <WorkflowCard
                           key={`${run.repository.full_name}-${run.id}`}
                           run={run}
                           isNew={newRunIds.has(run.id)}
                           refreshCycle={refreshCycle}
+                          awsAccounts={awsAccounts}
+                          envFilter={envFilter}
+                          onEnvironmentResolved={handleEnvironmentResolved}
                         />
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ))}
-            </div>
+                  ))}
+              </div>
+            )}
           </div>
         );
       })}

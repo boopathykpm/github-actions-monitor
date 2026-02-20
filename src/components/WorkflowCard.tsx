@@ -2,12 +2,26 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { getRunJobs, rerunWorkflow, rerunFailedJobs, cancelWorkflowRun, type WorkflowRun, type WorkflowJob } from '../lib/github';
 import StepsList from './StepsList';
+import type { AwsAccount } from './AwsAccountManager';
 
 interface WorkflowCardProps {
   run: WorkflowRun;
   isNew?: boolean;
   refreshCycle?: number;
+  awsAccounts?: AwsAccount[];
+  envFilter?: string | null;
+  onEnvironmentResolved?: (runId: number, env: string | null) => void;
 }
+
+interface AwsInfo {
+  alias: string;
+  accountId: string;
+  region: string;
+  configName?: string;
+  configEnv?: string;
+}
+
+const AWS_PATTERN = /\(([^,]+),\s*(\d{12}),\s*([^)]+)/;
 
 function statusColor(status: string, conclusion: string | null) {
   if (status === 'completed') {
@@ -69,18 +83,19 @@ function getEnvironment(inputs: Record<string, string> | null | undefined): stri
   return null;
 }
 
-export default function WorkflowCard({ run, isNew, refreshCycle = 0 }: WorkflowCardProps) {
+export default function WorkflowCard({ run, isNew, refreshCycle = 0, awsAccounts = [], envFilter, onEnvironmentResolved }: WorkflowCardProps) {
   const { token } = useAuth();
   const [expanded, setExpanded] = useState(false);
   const [jobs, setJobs] = useState<WorkflowJob[]>([]);
   const colors = statusColor(run.status, run.conclusion);
   const [owner, repo] = run.repository.full_name.split('/');
 
-  const isActive = run.status === 'in_progress' || run.status === 'queued' || run.status === 'waiting' || run.status === 'pending' || run.status === 'requested';
+  const isWaiting = run.status === 'queued' || run.status === 'waiting' || run.status === 'pending' || run.status === 'requested';
+  const isActive = run.status === 'in_progress' || isWaiting;
 
-  // Auto-fetch jobs for active runs to surface environment and current job
+  // Fetch jobs: once for completed runs, on every refresh cycle for active runs
   useEffect(() => {
-    if (!token || !isActive) return;
+    if (!token) return;
     let cancelled = false;
 
     getRunJobs(token, owner, repo, run.id)
@@ -130,6 +145,39 @@ export default function WorkflowCard({ run, isNew, refreshCycle = 0 }: WorkflowC
     return { name: active.name, completedSteps, totalSteps: active.steps.length };
   }, [isActive, jobs]);
 
+  // Extract AWS account info from job names and step names
+  const awsInfo = useMemo((): AwsInfo | null => {
+    for (const job of jobs) {
+      const candidates = [job.name, ...job.steps.map((s) => s.name)];
+      for (const name of candidates) {
+        const match = AWS_PATTERN.exec(name);
+        if (match) {
+          const alias = match[1].trim();
+          const accountId = match[2];
+          const region = match[3].trim();
+          const config = awsAccounts.find((a) => a.accountId === accountId);
+          return { alias, accountId, region, configName: config?.name, configEnv: config?.environment };
+        }
+      }
+    }
+    return null;
+  }, [jobs, awsAccounts]);
+
+  // Effective environment: prefer AWS config env, then job/input environment
+  const effectiveEnv = awsInfo?.configEnv || environment;
+
+  // Report resolved environment back to Dashboard for filtering
+  // Only report once jobs have loaded to avoid overwriting with null during remount
+  useEffect(() => {
+    if (jobs.length > 0) {
+      onEnvironmentResolved?.(run.id, effectiveEnv);
+    }
+  }, [run.id, effectiveEnv, onEnvironmentResolved, jobs.length]);
+
+  // Hide card if it doesn't match the active environment filter
+  // Skip filter while jobs are still loading to avoid flash-hiding on remount
+  if (envFilter && jobs.length > 0 && effectiveEnv !== envFilter) return null;
+
   return (
     <div
       className={`rounded-xl border transition-all duration-500 overflow-hidden ${colors.border} ${colors.bg} ${
@@ -176,20 +224,55 @@ export default function WorkflowCard({ run, isNew, refreshCycle = 0 }: WorkflowC
                 </span>
               )}
             </div>
+            {awsInfo && (
+              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-orange-500/15 text-orange-400 border border-orange-500/20"
+                  title={`AWS ${awsInfo.accountId} · ${awsInfo.region}`}
+                >
+                  <svg className="w-2.5 h-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z" />
+                  </svg>
+                  {awsInfo.configName || awsInfo.alias}
+                </span>
+                <span className="text-[10px] text-gray-500">{awsInfo.region}</span>
+                {awsInfo.configEnv && (
+                  <span className="text-[10px] px-1 py-0.5 bg-orange-500/10 text-orange-300 rounded">
+                    {awsInfo.configEnv}
+                  </span>
+                )}
+              </div>
+            )}
             <p className="text-xs text-gray-400 truncate mt-0.5">
               {run.display_title}
             </p>
             {currentJob && (
               <div className="flex items-center gap-1.5 mt-1.5">
                 <div className="w-3 h-3 flex-shrink-0 flex items-center justify-center">
-                  <div className="w-2.5 h-2.5 border-[1.5px] border-yellow-400 border-t-transparent rounded-full animate-spin" />
+                  {isWaiting ? (
+                    <svg className="w-3 h-3 text-blue-400 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  ) : (
+                    <div className="w-2.5 h-2.5 border-[1.5px] border-yellow-400 border-t-transparent rounded-full animate-spin" />
+                  )}
                 </div>
-                <span className="text-[11px] text-yellow-300 truncate" title={currentJob.name}>{currentJob.name}</span>
+                <span className={`text-[11px] truncate ${isWaiting ? 'text-blue-300' : 'text-yellow-300'}`} title={currentJob.name}>{currentJob.name}</span>
                 {currentJob.totalSteps > 0 && (
                   <span className="text-[10px] text-gray-500 flex-shrink-0">
                     step {currentJob.completedSteps}/{currentJob.totalSteps}
                   </span>
                 )}
+              </div>
+            )}
+            {isWaiting && !currentJob && (
+              <div className="flex items-center gap-1.5 mt-1.5">
+                <div className="w-3 h-3 flex-shrink-0 flex items-center justify-center">
+                  <svg className="w-3 h-3 text-blue-400 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <span className="text-[11px] text-blue-300">Waiting to start...</span>
               </div>
             )}
           </div>
